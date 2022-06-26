@@ -343,7 +343,7 @@ class Transformer(nn.Module):
         for i, layer_module in enumerate(self.layer):
             if output_hidden_states:
                 all_hidden_states = all_hidden_states + (hidden_state,)
-            if i == 0:
+            if i == 0 or i == 1:
                 logger.warning(f"{i}th loop. Before hidden state {hidden_state}")
                 logger.warning(f"{i}th loop. Before hidden state shape {hidden_state.shape}")
             layer_outputs = layer_module(
