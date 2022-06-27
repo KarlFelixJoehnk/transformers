@@ -343,16 +343,13 @@ class Transformer(nn.Module):
         for i, layer_module in enumerate(self.layer):
             if output_hidden_states:
                 all_hidden_states = all_hidden_states + (hidden_state,)
-            if i == 0 or i == 1:
-                logger.warning(f"{i}th loop. Before hidden state {hidden_state}")
-                logger.warning(f"{i}th loop. Before hidden state shape {hidden_state.shape}")
+            logger.warning(f"{i}th loop. Before hidden state {hidden_state}")
             layer_outputs = layer_module(
                 x=hidden_state, attn_mask=attn_mask, head_mask=head_mask[i], output_attentions=output_attentions
             )
             hidden_state = layer_outputs[-1]
-            if i == 0:
-                logger.warning(f"{i}th loop. Hidden State: {hidden_state}")
-                logger.warning(f"{i}th loop. Hidden state shape: {hidden_state.shape}")
+
+            logger.warning(f"{i}th loop. After Hidden State: {hidden_state}")
             if output_attentions:
                 assert len(layer_outputs) == 2
                 attentions = layer_outputs[0]
