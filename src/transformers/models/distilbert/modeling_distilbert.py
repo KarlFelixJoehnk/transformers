@@ -343,13 +343,13 @@ class Transformer(nn.Module):
         for i, layer_module in enumerate(self.layer):
             if output_hidden_states:
                 all_hidden_states = all_hidden_states + (hidden_state,)
-            logger.warning(f"{i}th loop. Before hidden state {hidden_state}")
+            # logger.warning(f"{i}th loop. Before hidden state {hidden_state}")
             layer_outputs = layer_module(
                 x=hidden_state, attn_mask=attn_mask, head_mask=head_mask[i], output_attentions=output_attentions
             )
             hidden_state = layer_outputs[-1]
 
-            logger.warning(f"{i}th loop. After Hidden State: {hidden_state}")
+            # logger.warning(f"{i}th loop. After Hidden State: {hidden_state}")
             if output_attentions:
                 assert len(layer_outputs) == 2
                 attentions = layer_outputs[0]
@@ -757,19 +757,19 @@ class DistilBertForSequenceClassification(DistilBertPreTrainedModel):
             return_dict=return_dict,
         )
 
-        logger.warning(f"SeqModel distilBert output: {distilbert_output}")
+        #logger.warning(f"SeqModel distilBert output: {distilbert_output}")
         hidden_state = distilbert_output[0]  # (bs, seq_len, dim)
         pooled_output = hidden_state[:, 0]  # (bs, dim)
-        logger.warning(f"SeqModel pooled output: {pooled_output}")
+        #logger.warning(f"SeqModel pooled output: {pooled_output}")
         pooled_output = self.pre_classifier(pooled_output)  # (bs, dim)
-        logger.warning(f"config dim: {self.pre_classifier.in_features}, {self.pre_classifier.out_features}, {self.pre_classifier.bias}")
-        logger.warning(f"config dim: {self.classifier.in_features}, {self.classifier.out_features}, {self.classifier.bias}")
-        logger.warning(f"SeqModel pooled output after pre classification: {pooled_output}")
+        #logger.warning(f"config dim: {self.pre_classifier.in_features}, {self.pre_classifier.out_features}, {self.pre_classifier.bias}")
+        #logger.warning(f"config dim: {self.classifier.in_features}, {self.classifier.out_features}, {self.classifier.bias}")
+        #logger.warning(f"SeqModel pooled output after pre classification: {pooled_output}")
         pooled_output = nn.ReLU()(pooled_output)  # (bs, dim)
-        logger.warning(f"SeqModel pooled output after RELU: {pooled_output}")
+        #logger.warning(f"SeqModel pooled output after RELU: {pooled_output}")
         pooled_output = self.dropout(pooled_output)  # (bs, dim)
         logits = self.classifier(pooled_output)  # (bs, num_labels)
-        logger.warning(f"logits: {logits}")
+        #logger.warning(f"logits: {logits}")
         loss = None
         if labels is not None:
             if self.config.problem_type is None:
