@@ -762,6 +762,8 @@ class DistilBertForSequenceClassification(DistilBertPreTrainedModel):
         pooled_output = hidden_state[:, 0]  # (bs, dim)
         logger.warning(f"SeqModel pooled output: {pooled_output}")
         pooled_output = self.pre_classifier(pooled_output)  # (bs, dim)
+        logger.warning(f"config dim: {self.pre_classifier.in_features}, {self.pre_classifier.out_features}, {self.pre_classifier.bias}")
+        logger.warning(f"config dim: {self.classifier.in_features}, {self.classifier.out_features}, {self.classifier.bias}")
         logger.warning(f"SeqModel pooled output after pre classification: {pooled_output}")
         pooled_output = nn.ReLU()(pooled_output)  # (bs, dim)
         logger.warning(f"SeqModel pooled output after RELU: {pooled_output}")
