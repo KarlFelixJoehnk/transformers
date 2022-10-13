@@ -226,20 +226,17 @@ def get_test_dependencies(test_fname):
     relative_imports = re.findall(r"from\s+(\.\S+)\s+import\s+([^\n]+)\n", content)
     relative_imports = [test for test, imp in relative_imports if "# tests_ignore" not in imp]
 
-    # Removes the double trailing '..' for parent imports, and creates an absolute path from the root dir with
-    # `tests` as a prefix.
-    parent_imports = [imp.strip(".") for imp in relative_imports if ".." in imp]
-    parent_imports = [os.path.join("tests", f"{test.replace('.', os.path.sep)}.py") for test in parent_imports]
+    def _convert_relative_import_to_file(relative_import):
+        level = 0
+        while relative_import.startswith("."):
+            level += 1
+            relative_import = relative_import[1:]
 
-    # Removes the single trailing '.' for current dir imports, and creates an absolute path from the root dir with
-    # tests/{module_name} as a prefix.
-    current_dir_imports = [imp.strip(".") for imp in relative_imports if ".." not in imp]
-    directory = os.path.sep.join(test_fname.split(os.path.sep)[:-1])
-    current_dir_imports = [
-        os.path.join(directory, f"{test.replace('.', os.path.sep)}.py") for test in current_dir_imports
-    ]
+        directory = os.path.sep.join(test_fname.split(os.path.sep)[:-level])
+        return os.path.join(directory, f"{relative_import.replace('.', os.path.sep)}.py")
 
-    return [f for f in [*parent_imports, *current_dir_imports] if os.path.isfile(f)]
+    dependencies = [_convert_relative_import_to_file(relative_import) for relative_import in relative_imports]
+    return [f for f in dependencies if os.path.isfile(os.path.join(PATH_TO_TRANFORMERS, f))]
 
 
 def create_reverse_dependency_tree():
@@ -356,8 +353,9 @@ SPECIAL_MODULE_TO_TEST_MAP = {
     "feature_extraction_sequence_utils.py": "test_sequence_feature_extraction_common.py",
     "feature_extraction_utils.py": "test_feature_extraction_common.py",
     "file_utils.py": ["utils/test_file_utils.py", "utils/test_model_output.py"],
+    "image_transforms.py": "test_image_transforms.py",
     "utils/generic.py": ["utils/test_file_utils.py", "utils/test_model_output.py", "utils/test_generic.py"],
-    "utils/hub.py": "utils/test_file_utils.py",
+    "utils/hub.py": "utils/test_hub_utils.py",
     "modelcard.py": "utils/test_model_card.py",
     "modeling_flax_utils.py": "test_modeling_flax_common.py",
     "modeling_tf_utils.py": ["test_modeling_tf_common.py", "utils/test_modeling_tf_core.py"],
@@ -380,6 +378,7 @@ SPECIAL_MODULE_TO_TEST_MAP = {
     ],
     "optimization.py": "optimization/test_optimization.py",
     "optimization_tf.py": "optimization/test_optimization_tf.py",
+    "pipelines/__init__.py": "pipelines/test_pipelines_*.py",
     "pipelines/base.py": "pipelines/test_pipelines_*.py",
     "pipelines/text2text_generation.py": [
         "pipelines/test_pipelines_text2text_generation.py",
@@ -436,10 +435,10 @@ def module_to_test_file(module_fname):
         return "tests/utils/test_cli.py"
     # Special case for onnx submodules
     elif len(splits) >= 2 and splits[-2] == "onnx":
-        return ["tests/onnx/test_onnx.py", "tests/onnx/test_onnx_v2.py"]
+        return ["tests/onnx/test_features.py", "tests/onnx/test_onnx.py", "tests/onnx/test_onnx_v2.py"]
     # Special case for utils (not the one in src/transformers, the ones at the root of the repo).
     elif len(splits) > 0 and splits[0] == "utils":
-        default_test_file = f"tests/utils/test_utils_{module_name}"
+        default_test_file = f"tests/repo_utils/test_{module_name}"
     elif len(splits) > 4 and splits[2] == "models":
         default_test_file = f"tests/models/{splits[3]}/test_{module_name}"
     elif len(splits) > 2 and splits[2].startswith("generation"):
@@ -467,6 +466,7 @@ EXPECTED_TEST_FILES_NEVER_TOUCHED = [
     "tests/sagemaker/test_single_node_gpu.py",  # SageMaker test
     "tests/sagemaker/test_multi_node_model_parallel.py",  # SageMaker test
     "tests/sagemaker/test_multi_node_data_parallel.py",  # SageMaker test
+    "tests/mixed_int8/test_mixed_int8.py",  # Mixed-int8 bitsandbytes test
 ]
 
 
@@ -620,6 +620,25 @@ def infer_tests_to_run(output_file, diff_with_last_commit=False, filters=None, j
                 json.dump(test_map, fp, ensure_ascii=False)
 
 
+def filter_pipeline_tests(output_file):
+    if not os.path.isfile(output_file):
+        print("No test file found.")
+        return
+    with open(output_file, "r", encoding="utf-8") as f:
+        test_files = f.read().split(" ")
+
+    if len(test_files) == 0:
+        print("No tests to filter.")
+        return
+    if test_files == ["tests"]:
+        test_files = [os.path.join("tests", f) for f in os.listdir("tests") if f not in ["__init__.py", "pipelines"]]
+    else:
+        test_files = [f for f in test_files if not f.startswith(os.path.join("tests", "pipelines"))]
+
+    with open(output_file, "w", encoding="utf-8") as f:
+        f.write(" ".join(test_files))
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -647,6 +666,11 @@ if __name__ == "__main__":
         help="Only keep the test files matching one of those filters.",
     )
     parser.add_argument(
+        "--filter_pipeline_tests",
+        action="store_true",
+        help="Will filter the pipeline tests outside of the generated list of tests.",
+    )
+    parser.add_argument(
         "--print_dependencies_of",
         type=str,
         help="Will only print the tree of modules depending on the file passed.",
@@ -657,6 +681,8 @@ if __name__ == "__main__":
         print_tree_deps_of(args.print_dependencies_of)
     elif args.sanity_check:
         sanity_check()
+    elif args.filter_pipeline_tests:
+        filter_pipeline_tests(args.output_file)
     else:
         repo = Repo(PATH_TO_TRANFORMERS)
 

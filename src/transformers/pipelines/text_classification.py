@@ -87,7 +87,9 @@ class TextClassificationPipeline(Pipeline):
             postprocess_params["_legacy"] = False
         elif return_all_scores is not None:
             warnings.warn(
-                "`return_all_scores` is now deprecated, use `top_k=1` if you want similar functionnality", UserWarning
+                "`return_all_scores` is now deprecated,  if want a similar funcionality use `top_k=None` instead of"
+                " `return_all_scores=True` or `top_k=1` instead of `return_all_scores=False`.",
+                UserWarning,
             )
             if return_all_scores:
                 postprocess_params["top_k"] = None
@@ -136,7 +138,9 @@ class TextClassificationPipeline(Pipeline):
             If `top_k` is used, one such dictionary is returned per label.
         """
         result = super().__call__(*args, **kwargs)
-        if isinstance(args[0], str) and isinstance(result, dict):
+        # TODO try and retrieve it in a nicer way from _sanitize_parameters.
+        _legacy = "top_k" not in kwargs
+        if isinstance(args[0], str) and _legacy:
             # This pipeline is odd, and return a list when single item is run
             return [result]
         else:

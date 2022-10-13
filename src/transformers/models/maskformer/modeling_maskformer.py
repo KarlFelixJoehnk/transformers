@@ -259,7 +259,8 @@ class MaskFormerForInstanceSegmentationOutput(ModelOutput):
     """
     Class for outputs of [`MaskFormerForInstanceSegmentation`].
 
-    This output can be directly passed to [`~MaskFormerFeatureExtractor.post_process_segmentation`] or
+    This output can be directly passed to [`~MaskFormerFeatureExtractor.post_process_semantic_segmentation`] or or
+    [`~MaskFormerFeatureExtractor.post_process_instance_segmentation`] or
     [`~MaskFormerFeatureExtractor.post_process_panoptic_segmentation`] depending on the task. Please, see
     [`~MaskFormerFeatureExtractor] for details regarding usage.
 
@@ -267,11 +268,11 @@ class MaskFormerForInstanceSegmentationOutput(ModelOutput):
         loss (`torch.Tensor`, *optional*):
             The computed loss, returned when labels are present.
         class_queries_logits (`torch.FloatTensor`):
-            A tensor of shape `(batch_size, num_queries, height, width)` representing the proposed masks for each
-            query.
-        masks_queries_logits (`torch.FloatTensor`):
             A tensor of shape `(batch_size, num_queries, num_labels + 1)` representing the proposed classes for each
             query. Note the `+ 1` is needed because we incorporate the null class.
+        masks_queries_logits (`torch.FloatTensor`):
+            A tensor of shape `(batch_size, num_queries, height, width)` representing the proposed masks for each
+            query.
         encoder_last_hidden_state (`torch.FloatTensor` of shape `(batch_size, num_channels, height, width)`):
             Last hidden states (final feature map) of the last stage of the encoder model (backbone).
         pixel_decoder_last_hidden_state (`torch.FloatTensor` of shape `(batch_size, num_channels, height, width)`):
@@ -471,13 +472,6 @@ def pair_wise_sigmoid_focal_loss(inputs: Tensor, labels: Tensor, alpha: float = 
     return loss / height_and_width
 
 
-# Copied from transformers.models.vit.modeling_vit.to_2tuple
-def to_2tuple(x):
-    if isinstance(x, collections.abc.Iterable):
-        return x
-    return (x, x)
-
-
 # Copied from transformers.models.swin.modeling_swin.window_partition
 def window_partition(input_feature, window_size):
     """
@@ -496,9 +490,9 @@ def window_reverse(windows, window_size, height, width):
     """
     Merges windows to produce higher resolution features.
     """
-    batch_size = math.floor(windows.shape[0] / (height * width / window_size / window_size))
-    windows = windows.view(batch_size, height // window_size, width // window_size, window_size, window_size, -1)
-    windows = windows.permute(0, 1, 3, 2, 4, 5).contiguous().view(batch_size, height, width, -1)
+    num_channels = windows.shape[-1]
+    windows = windows.view(-1, height // window_size, width // window_size, window_size, window_size, num_channels)
+    windows = windows.permute(0, 1, 3, 2, 4, 5).contiguous().view(-1, height, width, num_channels)
     return windows
 
 
@@ -506,15 +500,21 @@ def window_reverse(windows, window_size, height, width):
 def drop_path(input, drop_prob=0.0, training=False, scale_by_keep=True):
     """
     Drop paths (Stochastic Depth) per sample (when applied in main path of residual blocks).
+
+    Comment by Ross Wightman: This is the same as the DropConnect impl I created for EfficientNet, etc networks,
+    however, the original name is misleading as 'Drop Connect' is a different form of dropout in a separate paper...
+    See discussion: https://github.com/tensorflow/tpu/issues/494#issuecomment-532968956 ... I've opted for changing the
+    layer and argument names to 'drop path' rather than mix DropConnect as a layer name and use 'survival rate' as the
+    argument.
     """
     if drop_prob == 0.0 or not training:
         return input
     keep_prob = 1 - drop_prob
     shape = (input.shape[0],) + (1,) * (input.ndim - 1)  # work with diff dim tensors, not just 2D ConvNets
-    random_tensor = input.new_empty(shape).bernoulli_(keep_prob)
-    if keep_prob > 0.0 and scale_by_keep:
-        random_tensor.div_(keep_prob)
-    return input * random_tensor
+    random_tensor = keep_prob + torch.rand(shape, dtype=input.dtype, device=input.device)
+    random_tensor.floor_()  # binarize
+    output = input.div(keep_prob) * random_tensor
+    return output
 
 
 class MaskFormerSwinEmbeddings(nn.Module):
@@ -525,12 +525,7 @@ class MaskFormerSwinEmbeddings(nn.Module):
     def __init__(self, config):
         super().__init__()
 
-        self.patch_embeddings = MaskFormerSwinPatchEmbeddings(
-            image_size=config.image_size,
-            patch_size=config.patch_size,
-            num_channels=config.num_channels,
-            embed_dim=config.embed_dim,
-        )
+        self.patch_embeddings = MaskFormerSwinPatchEmbeddings(config)
         num_patches = self.patch_embeddings.num_patches
         self.patch_grid = self.patch_embeddings.grid_size
 
@@ -559,17 +554,21 @@ class MaskFormerSwinPatchEmbeddings(nn.Module):
     Image to Patch Embedding, including padding.
     """
 
-    def __init__(self, image_size=224, patch_size=16, num_channels=3, embed_dim=768):
+    def __init__(self, config):
         super().__init__()
-        image_size = to_2tuple(image_size)
-        patch_size = to_2tuple(patch_size)
+        image_size, patch_size = config.image_size, config.patch_size
+        num_channels, hidden_size = config.num_channels, config.embed_dim
+
+        image_size = image_size if isinstance(image_size, collections.abc.Iterable) else (image_size, image_size)
+        patch_size = patch_size if isinstance(patch_size, collections.abc.Iterable) else (patch_size, patch_size)
         num_patches = (image_size[1] // patch_size[1]) * (image_size[0] // patch_size[0])
         self.image_size = image_size
         self.patch_size = patch_size
+        self.num_channels = num_channels
         self.num_patches = num_patches
         self.grid_size = (image_size[0] // patch_size[0], image_size[1] // patch_size[1])
 
-        self.projection = nn.Conv2d(num_channels, embed_dim, kernel_size=patch_size, stride=patch_size)
+        self.projection = nn.Conv2d(num_channels, hidden_size, kernel_size=patch_size, stride=patch_size)
 
     def maybe_pad(self, pixel_values, height, width):
         if width % self.patch_size[1] != 0:
@@ -581,7 +580,11 @@ class MaskFormerSwinPatchEmbeddings(nn.Module):
         return pixel_values
 
     def forward(self, pixel_values):
-        _, _, height, width = pixel_values.shape
+        _, num_channels, height, width = pixel_values.shape
+        if num_channels != self.num_channels:
+            raise ValueError(
+                "Make sure that the channel dimension of the pixel values match with the one set in the configuration."
+            )
         # pad the input to be divisible by self.patch_size, if needed
         pixel_values = self.maybe_pad(pixel_values, height, width)
         embeddings = self.projection(pixel_values)
@@ -649,13 +652,15 @@ class MaskFormerSwinPatchMerging(nn.Module):
 class MaskFormerSwinDropPath(nn.Module):
     """Drop paths (Stochastic Depth) per sample (when applied in main path of residual blocks)."""
 
-    def __init__(self, drop_prob=None, scale_by_keep=True):
-        super(MaskFormerSwinDropPath, self).__init__()
+    def __init__(self, drop_prob: Optional[float] = None) -> None:
+        super().__init__()
         self.drop_prob = drop_prob
-        self.scale_by_keep = scale_by_keep
 
-    def forward(self, input):
-        return drop_path(input, self.drop_prob, self.training, self.scale_by_keep)
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return drop_path(x, self.drop_prob, self.training)
+
+    def extra_repr(self) -> str:
+        return "p={}".format(self.drop_prob)
 
 
 # Copied from transformers.models.swin.modeling_swin.SwinSelfAttention with Swin->MaskFormerSwin
@@ -670,7 +675,10 @@ class MaskFormerSwinSelfAttention(nn.Module):
         self.num_attention_heads = num_heads
         self.attention_head_size = int(dim / num_heads)
         self.all_head_size = self.num_attention_heads * self.attention_head_size
-        self.window_size = to_2tuple(config.window_size)
+        window_size = config.window_size
+        self.window_size = (
+            window_size if isinstance(window_size, collections.abc.Iterable) else (window_size, window_size)
+        )
 
         self.relative_position_bias_table = nn.Parameter(
             torch.zeros((2 * self.window_size[0] - 1) * (2 * self.window_size[1] - 1), num_heads)
@@ -1204,8 +1212,8 @@ class DetrAttention(nn.Module):
         self.q_proj = nn.Linear(embed_dim, embed_dim, bias=bias)
         self.out_proj = nn.Linear(embed_dim, embed_dim, bias=bias)
 
-    def _shape(self, tensor: torch.Tensor, seq_len: int, bsz: int):
-        return tensor.view(bsz, seq_len, self.num_heads, self.head_dim).transpose(1, 2).contiguous()
+    def _shape(self, tensor: torch.Tensor, seq_len: int, batch_size: int):
+        return tensor.view(batch_size, seq_len, self.num_heads, self.head_dim).transpose(1, 2).contiguous()
 
     def with_pos_embed(self, tensor: torch.Tensor, position_embeddings: Optional[Tensor]):
         return tensor if position_embeddings is None else tensor + position_embeddings
@@ -1224,7 +1232,7 @@ class DetrAttention(nn.Module):
         # if key_value_states are provided this layer is used as a cross-attention layer
         # for the decoder
         is_cross_attention = key_value_states is not None
-        bsz, tgt_len, embed_dim = hidden_states.size()
+        batch_size, target_len, embed_dim = hidden_states.size()
 
         # add position embeddings to the hidden states before projecting to queries and keys
         if position_embeddings is not None:
@@ -1241,35 +1249,36 @@ class DetrAttention(nn.Module):
         # get key, value proj
         if is_cross_attention:
             # cross_attentions
-            key_states = self._shape(self.k_proj(key_value_states), -1, bsz)
-            value_states = self._shape(self.v_proj(key_value_states_original), -1, bsz)
+            key_states = self._shape(self.k_proj(key_value_states), -1, batch_size)
+            value_states = self._shape(self.v_proj(key_value_states_original), -1, batch_size)
         else:
             # self_attention
-            key_states = self._shape(self.k_proj(hidden_states), -1, bsz)
-            value_states = self._shape(self.v_proj(hidden_states_original), -1, bsz)
+            key_states = self._shape(self.k_proj(hidden_states), -1, batch_size)
+            value_states = self._shape(self.v_proj(hidden_states_original), -1, batch_size)
 
-        proj_shape = (bsz * self.num_heads, -1, self.head_dim)
-        query_states = self._shape(query_states, tgt_len, bsz).view(*proj_shape)
+        proj_shape = (batch_size * self.num_heads, -1, self.head_dim)
+        query_states = self._shape(query_states, target_len, batch_size).view(*proj_shape)
         key_states = key_states.view(*proj_shape)
         value_states = value_states.view(*proj_shape)
 
-        src_len = key_states.size(1)
+        source_len = key_states.size(1)
 
         attn_weights = torch.bmm(query_states, key_states.transpose(1, 2))
 
-        if attn_weights.size() != (bsz * self.num_heads, tgt_len, src_len):
+        if attn_weights.size() != (batch_size * self.num_heads, target_len, source_len):
             raise ValueError(
-                f"Attention weights should be of size {(bsz * self.num_heads, tgt_len, src_len)}, but is"
+                f"Attention weights should be of size {(batch_size * self.num_heads, target_len, source_len)}, but is"
                 f" {attn_weights.size()}"
             )
 
         if attention_mask is not None:
-            if attention_mask.size() != (bsz, 1, tgt_len, src_len):
+            if attention_mask.size() != (batch_size, 1, target_len, source_len):
                 raise ValueError(
-                    f"Attention mask should be of size {(bsz, 1, tgt_len, src_len)}, but is {attention_mask.size()}"
+                    f"Attention mask should be of size {(batch_size, 1, target_len, source_len)}, but is"
+                    f" {attention_mask.size()}"
                 )
-            attn_weights = attn_weights.view(bsz, self.num_heads, tgt_len, src_len) + attention_mask
-            attn_weights = attn_weights.view(bsz * self.num_heads, tgt_len, src_len)
+            attn_weights = attn_weights.view(batch_size, self.num_heads, target_len, source_len) + attention_mask
+            attn_weights = attn_weights.view(batch_size * self.num_heads, target_len, source_len)
 
         attn_weights = nn.functional.softmax(attn_weights, dim=-1)
 
@@ -1278,8 +1287,8 @@ class DetrAttention(nn.Module):
             # make sure that attn_weights keeps its gradient.
             # In order to do so, attn_weights have to reshaped
             # twice and have to be reused in the following
-            attn_weights_reshaped = attn_weights.view(bsz, self.num_heads, tgt_len, src_len)
-            attn_weights = attn_weights_reshaped.view(bsz * self.num_heads, tgt_len, src_len)
+            attn_weights_reshaped = attn_weights.view(batch_size, self.num_heads, target_len, source_len)
+            attn_weights = attn_weights_reshaped.view(batch_size * self.num_heads, target_len, source_len)
         else:
             attn_weights_reshaped = None
 
@@ -1287,15 +1296,15 @@ class DetrAttention(nn.Module):
 
         attn_output = torch.bmm(attn_probs, value_states)
 
-        if attn_output.size() != (bsz * self.num_heads, tgt_len, self.head_dim):
+        if attn_output.size() != (batch_size * self.num_heads, target_len, self.head_dim):
             raise ValueError(
-                f"`attn_output` should be of size {(bsz, self.num_heads, tgt_len, self.head_dim)}, but is"
+                f"`attn_output` should be of size {(batch_size, self.num_heads, target_len, self.head_dim)}, but is"
                 f" {attn_output.size()}"
             )
 
-        attn_output = attn_output.view(bsz, self.num_heads, tgt_len, self.head_dim)
+        attn_output = attn_output.view(batch_size, self.num_heads, target_len, self.head_dim)
         attn_output = attn_output.transpose(1, 2)
-        attn_output = attn_output.reshape(bsz, tgt_len, embed_dim)
+        attn_output = attn_output.reshape(batch_size, target_len, embed_dim)
 
         attn_output = self.out_proj(attn_output)
 
@@ -1344,7 +1353,8 @@ class DetrDecoderLayer(nn.Module):
         Args:
             hidden_states (`torch.FloatTensor`): input to the layer of shape `(seq_len, batch, embed_dim)`
             attention_mask (`torch.FloatTensor`): attention mask of size
-                `(batch, 1, tgt_len, src_len)` where padding elements are indicated by very large negative values.
+                `(batch, 1, target_len, source_len)` where padding elements are indicated by very large negative
+                values.
             position_embeddings (`torch.FloatTensor`, *optional*):
                 position embeddings that are added to the queries and keys
             in the cross-attention layer.
@@ -1354,7 +1364,8 @@ class DetrDecoderLayer(nn.Module):
             encoder_hidden_states (`torch.FloatTensor`):
                 cross attention input to the layer of shape `(seq_len, batch, embed_dim)`
             encoder_attention_mask (`torch.FloatTensor`): encoder attention mask of size
-                `(batch, 1, tgt_len, src_len)` where padding elements are indicated by very large negative values.
+                `(batch, 1, target_len, source_len)` where padding elements are indicated by very large negative
+                values.
             output_attentions (`bool`, *optional*):
                 Whether or not to return the attentions tensors of all attention layers. See `attentions` under
                 returned tensors for more detail.
@@ -1409,14 +1420,14 @@ class DetrDecoderLayer(nn.Module):
 
 
 # Copied from transformers.models.detr.modeling_detr._expand_mask
-def _expand_mask(mask: torch.Tensor, dtype: torch.dtype, tgt_len: Optional[int] = None):
+def _expand_mask(mask: torch.Tensor, dtype: torch.dtype, target_len: Optional[int] = None):
     """
-    Expands attention_mask from `[bsz, seq_len]` to `[bsz, 1, tgt_seq_len, src_seq_len]`.
+    Expands attention_mask from `[batch_size, seq_len]` to `[batch_size, 1, target_seq_len, source_seq_len]`.
     """
-    bsz, src_len = mask.size()
-    tgt_len = tgt_len if tgt_len is not None else src_len
+    batch_size, source_len = mask.size()
+    target_len = target_len if target_len is not None else source_len
 
-    expanded_mask = mask[:, None, None, :].expand(bsz, 1, tgt_len, src_len).to(dtype)
+    expanded_mask = mask[:, None, None, :].expand(batch_size, 1, target_len, source_len).to(dtype)
 
     inverted_mask = 1.0 - expanded_mask
 
@@ -1905,7 +1916,7 @@ class MaskFormerLoss(nn.Module):
 
     def get_num_masks(self, class_labels: torch.Tensor, device: torch.device) -> torch.Tensor:
         """
-        Computes the average number of target masks accross the batch, for normalization purposes.
+        Computes the average number of target masks across the batch, for normalization purposes.
         """
         num_masks = sum([len(classes) for classes in class_labels])
         num_masks_pt = torch.as_tensor([num_masks], dtype=torch.float, device=device)
@@ -2092,7 +2103,7 @@ class MaskFormerSinePositionEmbedding(nn.Module):
         self.num_pos_feats = num_pos_feats
         self.temperature = temperature
         self.normalize = normalize
-        self.scale = 2 * torch.pi if scale is None else scale
+        self.scale = 2 * math.pi if scale is None else scale
 
     def forward(self, x: Tensor, mask: Optional[Tensor] = None) -> Tensor:
         if mask is None:
@@ -2537,8 +2548,8 @@ class MaskFormerForInstanceSegmentation(MaskFormerPreTrainedModel):
         >>> masks_queries_logits = outputs.masks_queries_logits
 
         >>> # you can pass them to feature_extractor for postprocessing
-        >>> output = feature_extractor.post_process_segmentation(outputs)
         >>> output = feature_extractor.post_process_semantic_segmentation(outputs)
+        >>> output = feature_extractor.post_process_instance_segmentation(outputs)
         >>> output = feature_extractor.post_process_panoptic_segmentation(outputs)
         ```
         """

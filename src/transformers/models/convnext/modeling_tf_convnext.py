@@ -20,6 +20,8 @@ from typing import Dict, Optional, Tuple, Union
 import numpy as np
 import tensorflow as tf
 
+from transformers import shape_list
+
 from ...activations_tf import get_tf_activation
 from ...modeling_tf_outputs import TFBaseModelOutput, TFBaseModelOutputWithPooling, TFSequenceClassifierOutput
 from ...modeling_tf_utils import (
@@ -77,10 +79,17 @@ class TFConvNextEmbeddings(tf.keras.layers.Layer):
             bias_initializer="zeros",
         )
         self.layernorm = tf.keras.layers.LayerNormalization(epsilon=1e-6, name="layernorm")
+        self.num_channels = config.num_channels
 
     def call(self, pixel_values):
         if isinstance(pixel_values, dict):
             pixel_values = pixel_values["pixel_values"]
+
+        num_channels = shape_list(pixel_values)[1]
+        if tf.executing_eagerly() and num_channels != self.num_channels:
+            raise ValueError(
+                "Make sure that the channel dimension of the pixel values match with the one set in the configuration."
+            )
 
         # When running on CPU, `tf.keras.layers.Conv2D` doesn't support `NCHW` format.
         # So change the input format from `NCHW` to `NHWC`.
@@ -321,7 +330,8 @@ class TFConvNextMainLayer(tf.keras.layers.Layer):
             hidden_states = tuple([tf.transpose(h, perm=(0, 3, 1, 2)) for h in encoder_outputs[1]])
 
         if not return_dict:
-            return (last_hidden_state, pooled_output) + encoder_outputs[1:]
+            hidden_states = hidden_states if output_hidden_states else ()
+            return (last_hidden_state, pooled_output) + hidden_states
 
         return TFBaseModelOutputWithPooling(
             last_hidden_state=last_hidden_state,
@@ -374,7 +384,8 @@ class TFConvNextPreTrainedModel(TFPreTrainedModel):
             inputs (`Dict[str, tf.Tensor]`):
                 The input of the saved model as a dictionary of tensors.
         """
-        return self.call(inputs)
+        output = self.call(inputs)
+        return self.serving_output(output)
 
 
 CONVNEXT_START_DOCSTRING = r"""
@@ -388,13 +399,27 @@ CONVNEXT_START_DOCSTRING = r"""
 
     <Tip>
 
-    TF 2.0 models accepts two formats as inputs:
+    TensorFlow models and layers in `transformers` accept two formats as input:
 
     - having all inputs as keyword arguments (like PyTorch models), or
-    - having all inputs as a list, tuple or dict in the first positional arguments.
+    - having all inputs as a list, tuple or dict in the first positional argument.
 
-    This second option is useful when using [`tf.keras.Model.fit`] method which currently requires having all the
-    tensors in the first argument of the model call function: `model(inputs)`.
+    The reason the second format is supported is that Keras methods prefer this format when passing inputs to models
+    and layers. Because of this support, when using methods like `model.fit()` things should "just work" for you - just
+    pass your inputs and labels in any format that `model.fit()` supports! If, however, you want to use the second
+    format outside of Keras methods like `fit()` and `predict()`, such as when creating your own layers or models with
+    the Keras `Functional` API, there are three possibilities you can use to gather all the input Tensors in the first
+    positional argument:
+
+    - a single Tensor with `pixel_values` only and nothing else: `model(pixel_values)`
+    - a list of varying length with one or several input Tensors IN THE ORDER given in the docstring:
+    `model([pixel_values, attention_mask])` or `model([pixel_values, attention_mask, token_type_ids])`
+    - a dictionary with one or several input Tensors associated to the input names given in the docstring:
+    `model({"pixel_values": pixel_values, "token_type_ids": token_type_ids})`
+
+    Note that when creating models and layers with
+    [subclassing](https://keras.io/guides/making_new_layers_and_models_via_subclassing/) then you don't need to worry
+    about any of this, as you can just pass inputs like you would to any other Python function!
 
     </Tip>
 
@@ -481,6 +506,14 @@ class TFConvNextModel(TFConvNextPreTrainedModel):
             last_hidden_state=outputs.last_hidden_state,
             pooler_output=outputs.pooler_output,
             hidden_states=outputs.hidden_states,
+        )
+
+    def serving_output(self, output: TFBaseModelOutputWithPooling) -> TFBaseModelOutputWithPooling:
+        # hidden_states not converted to Tensor with tf.convert_to_tensor as they are all of different dimensions
+        return TFBaseModelOutputWithPooling(
+            last_hidden_state=output.last_hidden_state,
+            pooler_output=output.pooler_output,
+            hidden_states=output.hidden_states,
         )
 
 
@@ -575,3 +608,7 @@ class TFConvNextForImageClassification(TFConvNextPreTrainedModel, TFSequenceClas
             logits=logits,
             hidden_states=outputs.hidden_states,
         )
+
+    def serving_output(self, output: TFSequenceClassifierOutput) -> TFSequenceClassifierOutput:
+        # hidden_states not converted to Tensor with tf.convert_to_tensor as they are all of different dimensions
+        return TFSequenceClassifierOutput(logits=output.logits, hidden_states=output.hidden_states)

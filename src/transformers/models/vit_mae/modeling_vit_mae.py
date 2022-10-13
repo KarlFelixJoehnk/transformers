@@ -135,13 +135,6 @@ class ViTMAEForPreTrainingOutput(ModelOutput):
     attentions: Optional[Tuple[torch.FloatTensor]] = None
 
 
-# copied from transformers.models.vit.modeling_vit.to_2tuple ViT->ViTMAE
-def to_2tuple(x):
-    if isinstance(x, collections.abc.Iterable):
-        return x
-    return (x, x)
-
-
 def get_2d_sincos_pos_embed(embed_dim, grid_size, add_cls_token=False):
     """
     Create 2D sin/cos positional embeddings.
@@ -213,12 +206,7 @@ class ViTMAEEmbeddings(nn.Module):
         super().__init__()
 
         self.cls_token = nn.Parameter(torch.zeros(1, 1, config.hidden_size))
-        self.patch_embeddings = PatchEmbeddings(
-            image_size=config.image_size,
-            patch_size=config.patch_size,
-            num_channels=config.num_channels,
-            embed_dim=config.hidden_size,
-        )
+        self.patch_embeddings = ViTMAEPatchEmbeddings(config)
         self.num_patches = self.patch_embeddings.num_patches
         # fixed sin-cos embedding
         self.position_embeddings = nn.Parameter(
@@ -263,7 +251,7 @@ class ViTMAEEmbeddings(nn.Module):
 
         # keep the first subset
         ids_keep = ids_shuffle[:, :len_keep]
-        sequence_masked = torch.gather(sequence, dim=1, index=ids_keep.unsqueeze(-1).repeat(1, 1, dim))
+        sequence_unmasked = torch.gather(sequence, dim=1, index=ids_keep.unsqueeze(-1).repeat(1, 1, dim))
 
         # generate the binary mask: 0 is keep, 1 is remove
         mask = torch.ones([batch_size, seq_length], device=sequence.device)
@@ -271,7 +259,7 @@ class ViTMAEEmbeddings(nn.Module):
         # unshuffle to get the binary mask
         mask = torch.gather(mask, dim=1, index=ids_restore)
 
-        return sequence_masked, mask, ids_restore
+        return sequence_unmasked, mask, ids_restore
 
     def forward(self, pixel_values, noise=None):
         batch_size, num_channels, height, width = pixel_values.shape
@@ -291,27 +279,33 @@ class ViTMAEEmbeddings(nn.Module):
         return embeddings, mask, ids_restore
 
 
-# Based on timm implementation, which can be found here:
-# https://github.com/rwightman/pytorch-image-models/blob/master/timm/models/vision_transformer.py
-class PatchEmbeddings(nn.Module):
+class ViTMAEPatchEmbeddings(nn.Module):
     """
-    Image to Patch Embedding.
-
+    This class turns `pixel_values` of shape `(batch_size, num_channels, height, width)` into the initial
+    `hidden_states` (patch embeddings) of shape `(batch_size, seq_length, hidden_size)` to be consumed by a
+    Transformer.
     """
 
-    def __init__(self, image_size=224, patch_size=16, num_channels=3, embed_dim=768):
+    def __init__(self, config):
         super().__init__()
-        image_size = to_2tuple(image_size)
-        patch_size = to_2tuple(patch_size)
+        image_size, patch_size = config.image_size, config.patch_size
+        num_channels, hidden_size = config.num_channels, config.hidden_size
+        image_size = image_size if isinstance(image_size, collections.abc.Iterable) else (image_size, image_size)
+        patch_size = patch_size if isinstance(patch_size, collections.abc.Iterable) else (patch_size, patch_size)
         num_patches = (image_size[1] // patch_size[1]) * (image_size[0] // patch_size[0])
         self.image_size = image_size
         self.patch_size = patch_size
+        self.num_channels = num_channels
         self.num_patches = num_patches
 
-        self.projection = nn.Conv2d(num_channels, embed_dim, kernel_size=patch_size, stride=patch_size)
+        self.projection = nn.Conv2d(num_channels, hidden_size, kernel_size=patch_size, stride=patch_size)
 
     def forward(self, pixel_values):
         batch_size, num_channels, height, width = pixel_values.shape
+        if num_channels != self.num_channels:
+            raise ValueError(
+                "Make sure that the channel dimension of the pixel values match with the one set in the configuration."
+            )
         if height != self.image_size[0] or width != self.image_size[1]:
             raise ValueError(
                 f"Input image size ({height}*{width}) doesn't match model ({self.image_size[0]}*{self.image_size[1]})."
@@ -587,7 +581,6 @@ class ViTMAEPreTrainedModel(PreTrainedModel):
     main_input_name = "pixel_values"
     supports_gradient_checkpointing = True
 
-    # Copied from transformers.models.vit.modeling_vit.ViTPreTrainedModel._init_weights
     def _init_weights(self, module):
         """Initialize the weights"""
         if isinstance(module, (nn.Linear, nn.Conv2d)):
@@ -671,13 +664,13 @@ class ViTMAEModel(ViTMAEPreTrainedModel):
     @replace_return_docstrings(output_type=ViTMAEModelOutput, config_class=_CONFIG_FOR_DOC)
     def forward(
         self,
-        pixel_values=None,
-        noise=None,
-        head_mask=None,
-        output_attentions=None,
-        output_hidden_states=None,
-        return_dict=None,
-    ):
+        pixel_values: Optional[torch.FloatTensor] = None,
+        noise: Optional[torch.FloatTensor] = None,
+        head_mask: Optional[torch.FloatTensor] = None,
+        output_attentions: Optional[bool] = None,
+        output_hidden_states: Optional[bool] = None,
+        return_dict: Optional[bool] = None,
+    ) -> Union[Tuple, ViTMAEModelOutput]:
         r"""
         Returns:
 
@@ -843,7 +836,16 @@ class ViTMAEDecoder(nn.Module):
 
 
 @add_start_docstrings(
-    "The ViTMAE Model transformer with the decoder on top for self-supervised pre-training.",
+    """The ViTMAE Model transformer with the decoder on top for self-supervised pre-training.
+
+    <Tip>
+
+    Note that we provide a script to pre-train this model on custom data in our [examples
+    directory](https://github.com/huggingface/transformers/tree/main/examples/pytorch/image-pretraining).
+
+    </Tip>
+
+    """,
     VIT_MAE_START_DOCSTRING,
 )
 class ViTMAEForPreTraining(ViTMAEPreTrainedModel):
@@ -963,13 +965,13 @@ class ViTMAEForPreTraining(ViTMAEPreTrainedModel):
     @replace_return_docstrings(output_type=ViTMAEForPreTrainingOutput, config_class=_CONFIG_FOR_DOC)
     def forward(
         self,
-        pixel_values=None,
-        noise=None,
-        head_mask=None,
-        output_attentions=None,
-        output_hidden_states=None,
-        return_dict=None,
-    ):
+        pixel_values: Optional[torch.FloatTensor] = None,
+        noise: Optional[torch.FloatTensor] = None,
+        head_mask: Optional[torch.FloatTensor] = None,
+        output_attentions: Optional[bool] = None,
+        output_hidden_states: Optional[bool] = None,
+        return_dict: Optional[bool] = None,
+    ) -> Union[Tuple, ViTMAEForPreTrainingOutput]:
         r"""
         Returns:
 

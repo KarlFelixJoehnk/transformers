@@ -3,6 +3,7 @@ LABEL maintainer="Hugging Face"
 
 ARG DEBIAN_FRONTEND=noninteractive
 
+ARG PYTORCH='1.12.1'
 # Example: `cu102`, `cu113`, etc.
 ARG CUDA='cu113'
 
@@ -16,7 +17,7 @@ RUN git clone https://github.com/huggingface/transformers && cd transformers && 
 # Install latest release PyTorch
 # (PyTorch must be installed before pre-compiling any DeepSpeed c++/cuda ops.)
 # (https://www.deepspeed.ai/tutorials/advanced-install/#pre-install-deepspeed-ops)
-RUN python3 -m pip install --no-cache-dir -U torch torchvision torchaudio --extra-index-url https://download.pytorch.org/whl/$CUDA
+RUN python3 -m pip install --no-cache-dir -U torch==$PYTORCH torchvision torchaudio --extra-index-url https://download.pytorch.org/whl/$CUDA
 
 RUN python3 -m pip install --no-cache-dir ./transformers[deepspeed-testing]
 
@@ -25,7 +26,7 @@ RUN python3 -m pip uninstall -y deepspeed
 # This has to be run (again) inside the GPU VMs running the tests.
 # The installation works here, but some tests fail, if we don't pre-build deepspeed again in the VMs running the tests.
 # TODO: Find out why test fail.
-RUN DS_BUILD_CPU_ADAM=1 DS_BUILD_AIO=1 DS_BUILD_UTILS=1 python3 -m pip install deepspeed --global-option="build_ext" --global-option="-j8" --no-cache -v --disable-pip-version-check 2>&1
+RUN DS_BUILD_CPU_ADAM=1 DS_BUILD_FUSED_ADAM=1 DS_BUILD_AIO=1 DS_BUILD_UTILS=1 python3 -m pip install deepspeed --global-option="build_ext" --global-option="-j8" --no-cache -v --disable-pip-version-check 2>&1
 
 # When installing in editable mode, `transformers` is not recognized as a package.
 # this line must be added in order for python to be aware of transformers.

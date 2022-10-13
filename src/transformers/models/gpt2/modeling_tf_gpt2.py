@@ -20,7 +20,6 @@ from typing import List, Optional, Tuple, Union
 
 import numpy as np
 import tensorflow as tf
-from tensorflow.compiler.tf2xla.python.xla import dynamic_update_slice
 
 from ...activations_tf import get_tf_activation
 from ...modeling_tf_outputs import (
@@ -443,6 +442,16 @@ class TFGPT2MainLayer(tf.keras.layers.Layer):
         position_ids = tf.reshape(position_ids, [-1, shape_list(position_ids)[-1]])
 
         if inputs_embeds is None:
+            # Note: tf.gather, on which the embedding layer is based, won't check positive out of bound
+            # indices on GPU, returning zeros instead. This is a dangerous silent behavior.
+            tf.debugging.assert_less(
+                input_ids,
+                tf.cast(self.vocab_size, dtype=input_ids.dtype),
+                message=(
+                    "input_ids must be smaller than the embedding layer's input dimension (got"
+                    f" {tf.math.reduce_max(input_ids)} >= {self.vocab_size})"
+                ),
+            )
             inputs_embeds = self.wte(input_ids, mode="embedding")
 
         position_embeds = tf.gather(self.wpe, position_ids)
@@ -549,8 +558,8 @@ class TFGPT2PreTrainedModel(TFPreTrainedModel):
     @tf.function(
         input_signature=[
             {
-                "input_ids": tf.TensorSpec((None, None), tf.int32, name="input_ids"),
-                "attention_mask": tf.TensorSpec((None, None), tf.int32, name="attention_mask"),
+                "input_ids": tf.TensorSpec((None, None), tf.int64, name="input_ids"),
+                "attention_mask": tf.TensorSpec((None, None), tf.int64, name="attention_mask"),
             }
         ]
     )
@@ -608,22 +617,27 @@ GPT2_START_DOCSTRING = r"""
 
     <Tip>
 
-    TF 2.0 models accepts two formats as inputs:
+    TensorFlow models and layers in `transformers` accept two formats as input:
 
     - having all inputs as keyword arguments (like PyTorch models), or
-    - having all inputs as a list, tuple or dict in the first positional arguments.
+    - having all inputs as a list, tuple or dict in the first positional argument.
 
-    This second option is useful when using [`tf.keras.Model.fit`] method which currently requires having all the
-    tensors in the first argument of the model call function: `model(inputs)`.
+    The reason the second format is supported is that Keras methods prefer this format when passing inputs to models
+    and layers. Because of this support, when using methods like `model.fit()` things should "just work" for you - just
+    pass your inputs and labels in any format that `model.fit()` supports! If, however, you want to use the second
+    format outside of Keras methods like `fit()` and `predict()`, such as when creating your own layers or models with
+    the Keras `Functional` API, there are three possibilities you can use to gather all the input Tensors in the first
+    positional argument:
 
-    If you choose this second option, there are three possibilities you can use to gather all the input Tensors in the
-    first positional argument :
-
-    - a single Tensor with `input_ids` only and nothing else: `model(inputs_ids)`
+    - a single Tensor with `input_ids` only and nothing else: `model(input_ids)`
     - a list of varying length with one or several input Tensors IN THE ORDER given in the docstring:
     `model([input_ids, attention_mask])` or `model([input_ids, attention_mask, token_type_ids])`
     - a dictionary with one or several input Tensors associated to the input names given in the docstring:
     `model({"input_ids": input_ids, "token_type_ids": token_type_ids})`
+
+    Note that when creating models and layers with
+    [subclassing](https://keras.io/guides/making_new_layers_and_models_via_subclassing/) then you don't need to worry
+    about any of this, as you can just pass inputs like you would to any other Python function!
 
     </Tip>
 
@@ -838,63 +852,6 @@ class TFGPT2LMHeadModel(TFGPT2PreTrainedModel, TFCausalLanguageModelingLoss):
             "token_type_ids": token_type_ids,
         }
 
-    def _update_model_kwargs_for_xla_generation(self, outputs, model_kwargs, current_pos, max_length):
-        # TODO(Pvp, Joao, Matt) - this function can be cleaned a bit and refactored
-        # quite some duplicated code patterns it seems
-        # also the `attention_mask` is currently used in a somewhat hacky to
-        # correctly influence the `past_key_values` - not sure if this is the way to go
-        # Let's keep that for a future PR.
-        past = outputs.past_key_values
-        is_past_initialized = model_kwargs.pop("past", None) is not None
-        attention_mask = model_kwargs.pop("attention_mask")
-        batch_size = attention_mask.shape[0]
-
-        if not is_past_initialized:
-            # past[0].shape[3] is seq_length of prompt
-            num_padding_values = max_length - past[0].shape[3] - 1
-
-            padding_values = np.zeros((5, 2), dtype=np.int32)
-            padding_values[3, 1] = num_padding_values
-            padding_values = tf.constant(padding_values)
-
-            new_past = list(past)
-            for i in range(len(past)):
-                new_past[i] = tf.pad(past[i], padding_values)
-
-            # Zeros for the currently-unfilled locations in the past tensor, ones for the actual input_ids
-            attention_mask = tf.concat(
-                [
-                    attention_mask,
-                    tf.zeros((batch_size, num_padding_values), dtype=attention_mask.dtype),
-                    tf.ones((batch_size, 1), dtype=attention_mask.dtype),
-                ],
-                axis=1,
-            )
-        else:
-            new_past = [None for _ in range(len(past))]
-            slice_start_base = tf.constant([0, 0, 0, 1, 0])
-            attention_mask_update_slice = tf.ones((batch_size, 1), dtype=attention_mask.dtype)
-            # -1 because current_pos has already been incremented before this function
-            # -1 again because last index = len - 1
-            new_past_index = current_pos - 2
-
-            for i in range(len(past)):
-                update_slice = past[i][:, :, :, -1:]
-                # Write the last slice to the first open location in the padded past array
-                # and then truncate the last slice off the array
-                new_past[i] = dynamic_update_slice(
-                    past[i][:, :, :, :-1], update_slice, slice_start_base * new_past_index
-                )
-
-            update_start = tf.constant([0, 1], dtype=tf.int32) * new_past_index
-            attention_mask = dynamic_update_slice(attention_mask, attention_mask_update_slice, update_start)
-
-        # set `attention_mask` and `past`
-        model_kwargs["attention_mask"] = attention_mask
-        model_kwargs["past"] = tuple(new_past)
-
-        return model_kwargs
-
     @unpack_inputs
     @add_start_docstrings_to_model_forward(GPT2_INPUTS_DOCSTRING)
     @add_code_sample_docstrings(
@@ -1041,7 +998,7 @@ class TFGPT2DoubleHeadsModel(TFGPT2PreTrainedModel):
         r"""
         mc_token_ids (`tf.Tensor` or `Numpy array` of shape `(batch_size, num_choices)`, *optional*, default to index of the last token of the input):
             Index of the classification token in each input sequence. Selected in the range `[0, input_ids.size(-1) -
-            1[`.
+            1]`.
 
         Return:
 

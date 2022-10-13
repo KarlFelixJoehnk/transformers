@@ -20,12 +20,11 @@ from transformers import (
     TextClassificationPipeline,
     pipeline,
 )
-from transformers.testing_utils import is_pipeline_test, nested_simplify, require_tf, require_torch, slow
+from transformers.testing_utils import nested_simplify, require_tf, require_torch, slow
 
 from .test_pipelines_common import ANY, PipelineTestCaseMeta
 
 
-@is_pipeline_test
 class TextClassificationPipelineTests(unittest.TestCase, metaclass=PipelineTestCaseMeta):
     model_mapping = MODEL_FOR_SEQUENCE_CLASSIFICATION_MAPPING
     tf_model_mapping = TF_MODEL_FOR_SEQUENCE_CLASSIFICATION_MAPPING
@@ -59,6 +58,29 @@ class TextClassificationPipelineTests(unittest.TestCase, metaclass=PipelineTestC
         # Legacy behavior
         outputs = text_classifier("This is great !", return_all_scores=False)
         self.assertEqual(nested_simplify(outputs), [{"label": "LABEL_0", "score": 0.504}])
+
+        outputs = text_classifier("This is great !", return_all_scores=True)
+        self.assertEqual(
+            nested_simplify(outputs), [[{"label": "LABEL_0", "score": 0.504}, {"label": "LABEL_1", "score": 0.496}]]
+        )
+
+        outputs = text_classifier(["This is great !", "Something else"], return_all_scores=True)
+        self.assertEqual(
+            nested_simplify(outputs),
+            [
+                [{"label": "LABEL_0", "score": 0.504}, {"label": "LABEL_1", "score": 0.496}],
+                [{"label": "LABEL_0", "score": 0.504}, {"label": "LABEL_1", "score": 0.496}],
+            ],
+        )
+
+        outputs = text_classifier(["This is great !", "Something else"], return_all_scores=False)
+        self.assertEqual(
+            nested_simplify(outputs),
+            [
+                {"label": "LABEL_0", "score": 0.504},
+                {"label": "LABEL_0", "score": 0.504},
+            ],
+        )
 
     @require_torch
     def test_accepts_torch_device(self):

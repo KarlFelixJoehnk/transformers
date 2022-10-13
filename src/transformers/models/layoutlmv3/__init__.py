@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING
 from ...utils import (
     OptionalDependencyNotAvailable,
     _LazyModule,
+    is_tf_available,
     is_tokenizers_available,
     is_torch_available,
     is_vision_available,
@@ -28,7 +29,11 @@ from ...utils import (
 
 
 _import_structure = {
-    "configuration_layoutlmv3": ["LAYOUTLMV3_PRETRAINED_CONFIG_ARCHIVE_MAP", "LayoutLMv3Config"],
+    "configuration_layoutlmv3": [
+        "LAYOUTLMV3_PRETRAINED_CONFIG_ARCHIVE_MAP",
+        "LayoutLMv3Config",
+        "LayoutLMv3OnnxConfig",
+    ],
     "processing_layoutlmv3": ["LayoutLMv3Processor"],
     "tokenization_layoutlmv3": ["LayoutLMv3Tokenizer"],
 }
@@ -57,6 +62,21 @@ else:
     ]
 
 try:
+    if not is_tf_available():
+        raise OptionalDependencyNotAvailable()
+except OptionalDependencyNotAvailable:
+    pass
+else:
+    _import_structure["modeling_tf_layoutlmv3"] = [
+        "TF_LAYOUTLMV3_PRETRAINED_MODEL_ARCHIVE_LIST",
+        "TFLayoutLMv3ForQuestionAnswering",
+        "TFLayoutLMv3ForSequenceClassification",
+        "TFLayoutLMv3ForTokenClassification",
+        "TFLayoutLMv3Model",
+        "TFLayoutLMv3PreTrainedModel",
+    ]
+
+try:
     if not is_vision_available():
         raise OptionalDependencyNotAvailable()
 except OptionalDependencyNotAvailable:
@@ -66,7 +86,11 @@ else:
 
 
 if TYPE_CHECKING:
-    from .configuration_layoutlmv3 import LAYOUTLMV3_PRETRAINED_CONFIG_ARCHIVE_MAP, LayoutLMv3Config
+    from .configuration_layoutlmv3 import (
+        LAYOUTLMV3_PRETRAINED_CONFIG_ARCHIVE_MAP,
+        LayoutLMv3Config,
+        LayoutLMv3OnnxConfig,
+    )
     from .processing_layoutlmv3 import LayoutLMv3Processor
     from .tokenization_layoutlmv3 import LayoutLMv3Tokenizer
 
@@ -91,6 +115,21 @@ if TYPE_CHECKING:
             LayoutLMv3ForTokenClassification,
             LayoutLMv3Model,
             LayoutLMv3PreTrainedModel,
+        )
+
+    try:
+        if not is_tf_available():
+            raise OptionalDependencyNotAvailable()
+    except OptionalDependencyNotAvailable:
+        pass
+    else:
+        from .modeling_tf_layoutlmv3 import (
+            TF_LAYOUTLMV3_PRETRAINED_MODEL_ARCHIVE_LIST,
+            TFLayoutLMv3ForQuestionAnswering,
+            TFLayoutLMv3ForSequenceClassification,
+            TFLayoutLMv3ForTokenClassification,
+            TFLayoutLMv3Model,
+            TFLayoutLMv3PreTrainedModel,
         )
 
     try:

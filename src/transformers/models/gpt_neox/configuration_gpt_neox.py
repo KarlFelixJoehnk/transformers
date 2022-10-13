@@ -38,38 +38,37 @@ class GPTNeoXConfig(PretrainedConfig):
 
 
     Args:
-        vocab_size (`int`, *optional*, defaults to 30522):
+        vocab_size (`int`, *optional*, defaults to 50432):
             Vocabulary size of the GPTNeoX model. Defines the number of different tokens that can be represented by the
             `inputs_ids` passed when calling [`GPTNeoXModel`].
-        hidden_size (`int`, *optional*, defaults to 768):
+        hidden_size (`int`, *optional*, defaults to 6144):
             Dimension of the encoder layers and the pooler layer.
-        num_hidden_layers (`int`, *optional*, defaults to 12):
+        num_hidden_layers (`int`, *optional*, defaults to 44):
             Number of hidden layers in the Transformer encoder.
-        num_attention_heads (`int`, *optional*, defaults to 12):
+        num_attention_heads (`int`, *optional*, defaults to 64):
             Number of attention heads for each attention layer in the Transformer encoder.
-        intermediate_size (`int`, *optional*, defaults to 3072):
+        intermediate_size (`int`, *optional*, defaults to 24576):
             Dimension of the "intermediate" (i.e., feed-forward) layer in the Transformer encoder.
         hidden_act (`str` or `function`, *optional*, defaults to `"gelu"`):
             The non-linear activation function (function or string) in the encoder and pooler. If string, `"gelu"`,
             `"relu"`, `"selu"` and `"gelu_new"` are supported.
-        hidden_dropout_prob (`float`, *optional*, defaults to 0.1):
-            The dropout probabilitiy for all fully connected layers in the embeddings, encoder, and pooler.
-        attention_probs_dropout_prob (`float`, *optional*, defaults to 0.1):
-            The dropout ratio for the attention probabilities.
         rotary_pct (`float`, *optional*, defaults to 0.25):
             percentage of hidden dimensions to allocate to rotary embeddings
         rotary_emb_base (`int`, *optional*, defaults to 10000)
             base for computing rotary embeddings frequency
-        max_position_embeddings (`int`, *optional*, defaults to 512):
+        max_position_embeddings (`int`, *optional*, defaults to 2048):
             The maximum sequence length that this model might ever be used with. Typically set this to something large
             just in case (e.g., 512 or 1024 or 2048).
-        initializer_range (`float`, *optional*, defaults to 0.02):
+        initializer_range (`float`, *optional*, defaults to 1e-5):
             The standard deviation of the truncated_normal_initializer for initializing all weight matrices.
         layer_norm_eps (`float`, *optional*, defaults to 1e-12):
             The epsilon used by the layer normalization layers.
         use_cache (`bool`, *optional*, defaults to `True`):
             Whether or not the model should return the last key/values attentions (not used by all models). Only
             relevant if `config.is_decoder=True`.
+        use_parallel_residual (`bool`, *optional*, defaults to `True`):
+            Whether to use a "parallel" formulation in each Transformer layer, which can provide a slight training
+            speedup at large scales (e.g. 20B).
         Example:
 
     ```python
@@ -94,8 +93,6 @@ class GPTNeoXConfig(PretrainedConfig):
         num_attention_heads=64,
         intermediate_size=24576,
         hidden_act="gelu",
-        hidden_dropout_prob=0.1,
-        attention_probs_dropout_prob=0.1,
         rotary_pct=0.25,
         rotary_emb_base=10000,
         max_position_embeddings=2048,
@@ -105,6 +102,7 @@ class GPTNeoXConfig(PretrainedConfig):
         bos_token_id=0,
         eos_token_id=2,
         tie_word_embeddings=False,
+        use_parallel_residual=True,
         **kwargs
     ):
         super().__init__(bos_token_id=bos_token_id, eos_token_id=eos_token_id, **kwargs)
@@ -115,11 +113,10 @@ class GPTNeoXConfig(PretrainedConfig):
         self.num_attention_heads = num_attention_heads
         self.intermediate_size = intermediate_size
         self.hidden_act = hidden_act
-        self.hidden_dropout_prob = hidden_dropout_prob
-        self.attention_probs_dropout_prob = attention_probs_dropout_prob
         self.rotary_pct = rotary_pct
         self.rotary_emb_base = rotary_emb_base
         self.initializer_range = initializer_range
         self.layer_norm_eps = layer_norm_eps
         self.use_cache = use_cache
         self.tie_word_embeddings = tie_word_embeddings
+        self.use_parallel_residual = use_parallel_residual

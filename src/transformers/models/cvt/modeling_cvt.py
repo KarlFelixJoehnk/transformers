@@ -17,7 +17,7 @@
 
 import collections.abc
 from dataclasses import dataclass
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Union
 
 import torch
 import torch.utils.checkpoint
@@ -78,35 +78,40 @@ class BaseModelOutputWithCLSToken(ModelOutput):
     hidden_states: Optional[Tuple[torch.FloatTensor]] = None
 
 
-# Copied from transformers.models.convnext.modeling_convnext.drop_path
-def drop_path(x, drop_prob: float = 0.0, training: bool = False):
+# Copied from transformers.models.beit.modeling_beit.drop_path
+def drop_path(input, drop_prob: float = 0.0, training: bool = False):
     """
-    Drop paths (Stochastic Depth) per sample (when applied in main path of residual blocks). This is the same as the
-    DropConnect impl I created for EfficientNet, etc networks, however, the original name is misleading as 'Drop
-    Connect' is a different form of dropout in a separate paper... See discussion:
-    https://github.com/tensorflow/tpu/issues/494#issuecomment-532968956 ... I've opted for changing the layer and
-    argument names to 'drop path' rather than mix DropConnect as a layer name and use 'survival rate' as the argument.
+    Drop paths (Stochastic Depth) per sample (when applied in main path of residual blocks).
+
+    Comment by Ross Wightman: This is the same as the DropConnect impl I created for EfficientNet, etc networks,
+    however, the original name is misleading as 'Drop Connect' is a different form of dropout in a separate paper...
+    See discussion: https://github.com/tensorflow/tpu/issues/494#issuecomment-532968956 ... I've opted for changing the
+    layer and argument names to 'drop path' rather than mix DropConnect as a layer name and use 'survival rate' as the
+    argument.
     """
     if drop_prob == 0.0 or not training:
-        return x
+        return input
     keep_prob = 1 - drop_prob
-    shape = (x.shape[0],) + (1,) * (x.ndim - 1)  # work with diff dim tensors, not just 2D ConvNets
-    random_tensor = keep_prob + torch.rand(shape, dtype=x.dtype, device=x.device)
+    shape = (input.shape[0],) + (1,) * (input.ndim - 1)  # work with diff dim tensors, not just 2D ConvNets
+    random_tensor = keep_prob + torch.rand(shape, dtype=input.dtype, device=input.device)
     random_tensor.floor_()  # binarize
-    output = x.div(keep_prob) * random_tensor
+    output = input.div(keep_prob) * random_tensor
     return output
 
 
-# Copied from transformers.models.convnext.modeling_convnext.ConvNextDropPath
+# Copied from transformers.models.beit.modeling_beit.BeitDropPath
 class CvtDropPath(nn.Module):
     """Drop paths (Stochastic Depth) per sample (when applied in main path of residual blocks)."""
 
-    def __init__(self, drop_prob=None):
+    def __init__(self, drop_prob: Optional[float] = None) -> None:
         super().__init__()
         self.drop_prob = drop_prob
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return drop_path(x, self.drop_prob, self.training)
+
+    def extra_repr(self) -> str:
+        return "p={}".format(self.drop_prob)
 
 
 class CvtEmbeddings(nn.Module):
@@ -446,7 +451,11 @@ class CvtStage(nn.Module):
         self.config = config
         self.stage = stage
         if self.config.cls_token[self.stage]:
-            self.cls_token = nn.Parameter(torch.zeros(1, 1, self.config.embed_dim[-1]))
+            self.cls_token = nn.Parameter(
+                nn.init.trunc_normal_(
+                    torch.zeros(1, 1, self.config.embed_dim[-1]), mean=0.0, std=config.initializer_range
+                )
+            )
 
         self.embedding = CvtEmbeddings(
             patch_size=config.patch_sizes[self.stage],
@@ -542,9 +551,7 @@ class CvtPreTrainedModel(PreTrainedModel):
     def _init_weights(self, module):
         """Initialize the weights"""
         if isinstance(module, (nn.Linear, nn.Conv2d)):
-            # Slightly different from the TF version which uses truncated_normal for initialization
-            # cf https://github.com/pytorch/pytorch/pull/5617
-            module.weight.data.normal_(mean=0.0, std=self.config.initializer_range)
+            module.weight.data = nn.init.trunc_normal_(module.weight.data, mean=0.0, std=self.config.initializer_range)
             if module.bias is not None:
                 module.bias.data.zero_()
         elif isinstance(module, nn.LayerNorm):
@@ -604,7 +611,13 @@ class CvtModel(CvtPreTrainedModel):
         modality="vision",
         expected_output=_EXPECTED_OUTPUT_SHAPE,
     )
-    def forward(self, pixel_values=None, output_hidden_states=None, return_dict=None):
+    def forward(
+        self,
+        pixel_values: Optional[torch.Tensor] = None,
+        output_hidden_states: Optional[bool] = None,
+        return_dict: Optional[bool] = None,
+    ) -> Union[Tuple, BaseModelOutputWithCLSToken]:
+
         output_hidden_states = (
             output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
         )
@@ -662,11 +675,11 @@ class CvtForImageClassification(CvtPreTrainedModel):
     )
     def forward(
         self,
-        pixel_values=None,
-        labels=None,
-        output_hidden_states=None,
-        return_dict=None,
-    ):
+        pixel_values: Optional[torch.Tensor] = None,
+        labels: Optional[torch.Tensor] = None,
+        output_hidden_states: Optional[bool] = None,
+        return_dict: Optional[bool] = None,
+    ) -> Union[Tuple, ImageClassifierOutputWithNoAttention]:
         r"""
         labels (`torch.LongTensor` of shape `(batch_size,)`, *optional*):
             Labels for computing the image classification/regression loss. Indices should be in `[0, ...,
