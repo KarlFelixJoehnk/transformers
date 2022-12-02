@@ -14,26 +14,38 @@
 # limitations under the License.
 
 import os
-from typing import TYPE_CHECKING, List, Tuple, Union
+from typing import TYPE_CHECKING, Dict, Iterable, List, Tuple, Union
 
 import numpy as np
+from packaging import version
 
 import requests
 
-from .utils import is_flax_available, is_tf_available, is_torch_available, is_vision_available
+from .utils import (
+    ExplicitEnum,
+    is_jax_tensor,
+    is_tf_tensor,
+    is_torch_available,
+    is_torch_tensor,
+    is_vision_available,
+    to_numpy,
+)
 from .utils.constants import (  # noqa: F401
     IMAGENET_DEFAULT_MEAN,
     IMAGENET_DEFAULT_STD,
     IMAGENET_STANDARD_MEAN,
     IMAGENET_STANDARD_STD,
 )
-from .utils.generic import ExplicitEnum, _is_jax, _is_tensorflow, _is_torch, to_numpy
 
 
 if is_vision_available():
     import PIL.Image
     import PIL.ImageOps
 
+    if version.parse(version.parse(PIL.__version__).base_version) >= version.parse("9.1.0"):
+        PILImageResampling = PIL.Image.Resampling
+    else:
+        PILImageResampling = PIL.Image
 
 if TYPE_CHECKING:
     if is_torch_available():
@@ -50,18 +62,6 @@ class ChannelDimension(ExplicitEnum):
     LAST = "channels_last"
 
 
-def is_torch_tensor(obj):
-    return _is_torch(obj) if is_torch_available() else False
-
-
-def is_tf_tensor(obj):
-    return _is_tensorflow(obj) if is_tf_available() else False
-
-
-def is_jax_tensor(obj):
-    return _is_jax(obj) if is_flax_available() else False
-
-
 def is_valid_image(img):
     return (
         isinstance(img, (PIL.Image.Image, np.ndarray))
@@ -72,7 +72,15 @@ def is_valid_image(img):
 
 
 def valid_images(imgs):
-    return all(is_valid_image(img) for img in imgs)
+    # If we have an list of images, make sure every image is valid
+    if isinstance(imgs, (list, tuple)):
+        for img in imgs:
+            if not valid_images(img):
+                return False
+    # If not a list of tuple, we have been given a single image or batched tensor of images
+    elif not is_valid_image(imgs):
+        return False
+    return True
 
 
 def is_batched(img):
@@ -112,6 +120,25 @@ def infer_channel_dimension_format(image: np.ndarray) -> ChannelDimension:
     raise ValueError("Unable to infer channel dimension format")
 
 
+def get_channel_dimension_axis(image: np.ndarray) -> int:
+    """
+    Returns the channel dimension axis of the image.
+
+    Args:
+        image (`np.ndarray`):
+            The image to get the channel dimension axis of.
+
+    Returns:
+        The channel dimension axis of the image.
+    """
+    channel_dim = infer_channel_dimension_format(image)
+    if channel_dim == ChannelDimension.FIRST:
+        return image.ndim - 3
+    elif channel_dim == ChannelDimension.LAST:
+        return image.ndim - 1
+    raise ValueError(f"Unsupported data format: {channel_dim}")
+
+
 def get_image_size(image: np.ndarray, channel_dim: ChannelDimension = None) -> Tuple[int, int]:
     """
     Returns the (height, width) dimensions of the image.
@@ -134,6 +161,47 @@ def get_image_size(image: np.ndarray, channel_dim: ChannelDimension = None) -> T
         return image.shape[-3], image.shape[-2]
     else:
         raise ValueError(f"Unsupported data format: {channel_dim}")
+
+
+def is_valid_annotation_coco_detection(annotation: Dict[str, Union[List, Tuple]]) -> bool:
+    if (
+        isinstance(annotation, dict)
+        and "image_id" in annotation
+        and "annotations" in annotation
+        and isinstance(annotation["annotations"], (list, tuple))
+        and (
+            # an image can have no annotations
+            len(annotation["annotations"]) == 0
+            or isinstance(annotation["annotations"][0], dict)
+        )
+    ):
+        return True
+    return False
+
+
+def is_valid_annotation_coco_panoptic(annotation: Dict[str, Union[List, Tuple]]) -> bool:
+    if (
+        isinstance(annotation, dict)
+        and "image_id" in annotation
+        and "segments_info" in annotation
+        and "file_name" in annotation
+        and isinstance(annotation["segments_info"], (list, tuple))
+        and (
+            # an image can have no segments
+            len(annotation["segments_info"]) == 0
+            or isinstance(annotation["segments_info"][0], dict)
+        )
+    ):
+        return True
+    return False
+
+
+def valid_coco_detection_annotations(annotations: Iterable[Dict[str, Union[List, Tuple]]]) -> bool:
+    return all(is_valid_annotation_coco_detection(ann) for ann in annotations)
+
+
+def valid_coco_panoptic_annotations(annotations: Iterable[Dict[str, Union[List, Tuple]]]) -> bool:
+    return all(is_valid_annotation_coco_panoptic(ann) for ann in annotations)
 
 
 def load_image(image: Union[str, "PIL.Image.Image"]) -> "PIL.Image.Image":
@@ -345,7 +413,7 @@ class ImageFeatureExtractionMixin:
                 If `size` is an int and `default_to_square` is `True`, then image will be resized to (size, size). If
                 `size` is an int and `default_to_square` is `False`, then smaller edge of the image will be matched to
                 this number. i.e, if height > width, then image will be rescaled to (size * height / width, size).
-            resample (`int`, *optional*, defaults to `PIL.Image.BILINEAR`):
+            resample (`int`, *optional*, defaults to `PILImageResampling.BILINEAR`):
                 The filter to user for resampling.
             default_to_square (`bool`, *optional*, defaults to `True`):
                 How to convert `size` when it is a single int. If set to `True`, the `size` will be converted to a
@@ -361,7 +429,7 @@ class ImageFeatureExtractionMixin:
         Returns:
             image: A resized `PIL.Image.Image`.
         """
-        resample = resample if resample is not None else PIL.Image.BILINEAR
+        resample = resample if resample is not None else PILImageResampling.BILINEAR
 
         self._ensure_format_supported(image)
 

@@ -474,15 +474,15 @@ class TFWhisperPreTrainedModel(TFPreTrainedModel):
             self.main_input_name: tf.random.uniform(
                 [2, self.config.num_mel_bins, self.config.max_source_positions * 2 - 1], dtype=tf.float32
             ),
-            "decoder_input_ids": tf.constant([[2, 3]], dtype=tf.int64),
+            "decoder_input_ids": tf.constant([[2, 3]], dtype=tf.int32),
         }
 
     @tf.function(
         input_signature=[
             {
                 "input_features": tf.TensorSpec((None, None, None), tf.float32, name="input_features"),
-                "decoder_input_ids": tf.TensorSpec((None, None), tf.int64, name="decoder_input_ids"),
-                "decoder_attention_mask": tf.TensorSpec((None, None), tf.int64, name="decoder_attention_mask"),
+                "decoder_input_ids": tf.TensorSpec((None, None), tf.int32, name="decoder_input_ids"),
+                "decoder_attention_mask": tf.TensorSpec((None, None), tf.int32, name="decoder_attention_mask"),
             }
         ]
     )
@@ -772,11 +772,6 @@ class TFWhisperDecoder(tf.keras.layers.Layer):
         )
 
         if attention_mask is not None:
-            attention_mask = tf.cond(
-                tf.greater(tf.shape(attention_mask)[-1], seq_len) & tf.greater(seq_len, 0),
-                lambda: attention_mask[:, : seq_len + past_key_values_length],
-                lambda: attention_mask,
-            )
             # [bsz, seq_len] -> [bsz, 1, tgt_seq_len, src_seq_len]
             expanded_attn_mask = _expand_mask(attention_mask, tgt_len=input_shape[-1])
             combined_attention_mask = (
@@ -1288,12 +1283,12 @@ class TFWhisperForConditionalGeneration(TFWhisperPreTrainedModel, TFCausalLangua
 
         >>> transcription = processor.batch_decode(generated_ids, skip_special_tokens=True)[0]
         >>> transcription
-        ' Mr. Quilter is the apostle of the middle classes, and we are glad to'
+        ' Mr. Quilter is the apostle of the middle classes, and we are glad to welcome his gospel.'
         ```"""
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
         if labels is not None:
-            if decoder_input_ids is None:
+            if decoder_input_ids is None and decoder_inputs_embeds is None:
                 decoder_input_ids = shift_tokens_right(
                     labels, self.config.pad_token_id, self.config.decoder_start_token_id
                 )
