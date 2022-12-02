@@ -705,7 +705,7 @@ class DistilBertForSequenceClassification(DistilBertPreTrainedModel):
         super().__init__(config)
         self.num_labels = config.num_labels
         self.config = config
-
+        self.weights = config.weights
         self.distilbert = DistilBertModel(config)
         self.pre_classifier = nn.Linear(config.dim, config.dim)
         self.classifier = nn.Linear(config.dim, config.num_labels)
@@ -803,7 +803,7 @@ class DistilBertForSequenceClassification(DistilBertPreTrainedModel):
                 loss_fct = CrossEntropyLoss()
                 loss = loss_fct(logits.view(-1, self.num_labels), labels.view(-1))
             elif self.config.problem_type == "multi_label_classification":
-                loss_fct = BCEWithLogitsLoss()
+                loss_fct = BCEWithLogitsLoss(weight=self.weights)
                 loss = loss_fct(logits, labels)
 
         if not return_dict:

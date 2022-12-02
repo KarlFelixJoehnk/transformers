@@ -263,6 +263,7 @@ class PretrainedConfig(PushToHubMixin):
         self.use_bfloat16 = kwargs.pop("use_bfloat16", False)
         self.tf_legacy_loss = kwargs.pop("tf_legacy_loss", False)  # Only used by TensorFlow models
         self.pruned_heads = kwargs.pop("pruned_heads", {})
+        self.weights = kwargs.pop("weights", None)
         self.tie_word_embeddings = kwargs.pop(
             "tie_word_embeddings", True
         )  # Whether input and output word embeddings should be tied for all MLM, LM and Seq2Seq models.
